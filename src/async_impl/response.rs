@@ -438,7 +438,7 @@ impl Response {
     /// encoding or HTTP/2 responses. They are typically used for metadata that can only
     /// be determined after processing the entire response body.
     #[inline]
-    pub fn trailers(&mut self) -> Option<&HeaderMap> {
+    pub fn trailers(&self) -> Option<&HeaderMap> {
         return self.trailers.get();
     }
 
