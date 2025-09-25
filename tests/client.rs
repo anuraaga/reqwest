@@ -677,6 +677,9 @@ async fn response_trailers() {
     // Read the body using chunk() to preserve response ownership
     let mut body_content = Vec::new();
 
+    // Before reading body, trailers should not be available.
+    assert!(res.trailers().is_none());
+
     while let Some(chunk) = res.chunk().await.expect("Failed to read chunk") {
         body_content.extend_from_slice(&chunk);
     }
@@ -685,7 +688,7 @@ async fn response_trailers() {
     assert_eq!(body, "HelloWorld!");
 
     // Now we can check trailers since the response body has been fully consumed
-    if let Some(trailers) = res.trailers().await.expect("Failed to get trailers") {
+    if let Some(trailers) = res.trailers() {
         assert_eq!(trailers.get("X-Custom-Trailer").unwrap(), "custom-value");
         assert_eq!(trailers.get("X-Checksum").unwrap(), "abc123");
     } else {

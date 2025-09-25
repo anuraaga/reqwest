@@ -1,6 +1,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -13,7 +14,6 @@ use hyper_util::client::legacy::connect::HttpInfo;
 use serde::de::DeserializeOwned;
 #[cfg(feature = "json")]
 use serde_json;
-use tokio::sync::oneshot::{self, Receiver};
 use tokio::time::Sleep;
 use url::Url;
 
@@ -34,7 +34,7 @@ pub struct Response {
     // Boxed to save space (11 words to 1 word), and it's not accessed
     // frequently internally.
     url: Box<Url>,
-    trailers_rx: Receiver<HeaderMap>,
+    trailers: Arc<OnceLock<HeaderMap>>,
 }
 
 impl Response {
@@ -46,7 +46,7 @@ impl Response {
         read_timeout: Option<Duration>,
     ) -> Response {
         let (mut parts, body) = res.into_parts();
-        let (body, trailers_rx) = extract_trailers_from_body(body);
+        let (body, trailers) = extract_trailers_from_body(body);
 
         let decoder = Decoder::detect(
             &mut parts.headers,
@@ -59,7 +59,7 @@ impl Response {
         Response {
             res,
             url: Box::new(url),
-            trailers_rx,
+            trailers,
         }
     }
 
@@ -438,14 +438,8 @@ impl Response {
     /// encoding or HTTP/2 responses. They are typically used for metadata that can only
     /// be determined after processing the entire response body.
     #[inline]
-    pub async fn trailers(&mut self) -> crate::Result<Option<HeaderMap>> {
-        match self.trailers_rx.try_recv() {
-            Ok(trailers) => Ok(Some(trailers)),
-            Err(err) => match err {
-                oneshot::error::TryRecvError::Empty => Ok(None),
-                oneshot::error::TryRecvError::Closed => Err(crate::error::body(err)),
-            },
-        }
+    pub fn trailers(&mut self) -> Option<&HeaderMap> {
+        return self.trailers.get();
     }
 
     // private
@@ -487,7 +481,7 @@ impl<T: Into<Body>> From<http::Response<T>> for Response {
         let (mut parts, body) = r.into_parts();
         let body: crate::async_impl::body::Body = body.into();
 
-        let (body, trailers_rx) = extract_trailers_from_body(body);
+        let (body, trailers) = extract_trailers_from_body(body);
 
         let decoder = Decoder::detect(
             &mut parts.headers,
@@ -503,7 +497,7 @@ impl<T: Into<Body>> From<http::Response<T>> for Response {
         Response {
             res,
             url: Box::new(url),
-            trailers_rx,
+            trailers,
         }
     }
 }
@@ -532,18 +526,18 @@ pin_project_lite::pin_project! {
     pub struct TrailerExtractingBody<B> {
         #[pin]
         inner: B,
-        trailers_tx: Option<oneshot::Sender<HeaderMap>>,
+        trailers: Arc<OnceLock<HeaderMap>>,
     }
 }
 
 impl<B> TrailerExtractingBody<B> {
-    fn new(body: B, trailers_tx: oneshot::Sender<HeaderMap>) -> Self
+    fn new(body: B, trailers: Arc<OnceLock<HeaderMap>>) -> Self
     where
         B: http_body::Body,
     {
         Self {
             inner: body,
-            trailers_tx: Some(trailers_tx),
+            trailers,
         }
     }
 }
@@ -564,9 +558,9 @@ where
         match std::task::ready!(this.inner.poll_frame(cx)) {
             Some(Ok(mut frame)) => {
                 if let Some(trailers) = frame.trailers_mut() {
-                    if let Some(tx) = this.trailers_tx.take() {
-                        let _ = tx.send(std::mem::take(trailers));
-                    }
+                    // Protocol error to have multiple trailer frames so it should be safe
+                    // to unwrap.
+                    this.trailers.set(std::mem::take(trailers)).unwrap();
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
@@ -590,16 +584,16 @@ fn extract_trailers_from_body<B>(
     body: B,
 ) -> (
     http_body_util::combinators::BoxBody<Bytes, B::Error>,
-    oneshot::Receiver<HeaderMap>,
+    Arc<OnceLock<HeaderMap>>,
 )
 where
     B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
 {
-    let (trailers_tx, trailers_rx) = oneshot::channel();
-    let wrapper = TrailerExtractingBody::new(body, trailers_tx);
+    let trailers = Arc::new(OnceLock::<HeaderMap>::new());
+    let wrapper = TrailerExtractingBody::new(body, trailers.clone());
     let boxed_body = http_body_util::BodyExt::boxed(wrapper);
 
-    (boxed_body, trailers_rx)
+    (boxed_body, trailers)
 }
 
 #[cfg(test)]
