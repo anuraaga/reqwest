@@ -173,6 +173,7 @@ struct Config {
     connection_verbose: bool,
     pool_idle_timeout: Option<Duration>,
     pool_max_idle_per_host: usize,
+    pool_balance_addresses: bool,
     tcp_keepalive: Option<Duration>,
     tcp_keepalive_interval: Option<Duration>,
     tcp_keepalive_retries: Option<u32>,
@@ -301,6 +302,7 @@ impl ClientBuilder {
                 connection_verbose: false,
                 pool_idle_timeout: Some(Duration::from_secs(90)),
                 pool_max_idle_per_host: usize::MAX,
+                pool_balance_addresses: false,
                 tcp_keepalive: Some(Duration::from_secs(15)),
                 tcp_keepalive_interval: Some(Duration::from_secs(15)),
                 tcp_keepalive_retries: Some(3),
@@ -979,6 +981,7 @@ impl ClientBuilder {
         builder.pool_timer(hyper_util::rt::TokioTimer::new());
         builder.pool_idle_timeout(config.pool_idle_timeout);
         builder.pool_max_idle_per_host(config.pool_max_idle_per_host);
+        builder.pool_balance_addresses(config.pool_balance_addresses);
 
         if config.http09_responses {
             builder.http09_responses(true);
@@ -1508,6 +1511,20 @@ impl ClientBuilder {
     /// Default is `usize::MAX` (no limit).
     pub fn pool_max_idle_per_host(mut self, max: usize) -> ClientBuilder {
         self.config.pool_max_idle_per_host = max;
+        self
+    }
+
+    /// Balance HTTP/2 connections across the addresses a host resolves to.
+    ///
+    /// When enabled, the pool keeps one HTTP/2 connection to each address the
+    /// host name resolves to and sends each request on the least loaded one,
+    /// opening more connections only when every connection is at the server's
+    /// stream limit. When disabled, the pool fills one connection before it
+    /// opens another.
+    ///
+    /// Default is `false`.
+    pub fn pool_balance_addresses(mut self, enabled: bool) -> ClientBuilder {
+        self.config.pool_balance_addresses = enabled;
         self
     }
 
