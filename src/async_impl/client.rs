@@ -173,7 +173,8 @@ struct Config {
     connection_verbose: bool,
     pool_idle_timeout: Option<Duration>,
     pool_max_idle_per_host: usize,
-    pool_balance_addresses: bool,
+    pool_max_connections_per_address: usize,
+    pool_dns_load_balancing: bool,
     tcp_keepalive: Option<Duration>,
     tcp_keepalive_interval: Option<Duration>,
     tcp_keepalive_retries: Option<u32>,
@@ -302,7 +303,8 @@ impl ClientBuilder {
                 connection_verbose: false,
                 pool_idle_timeout: Some(Duration::from_secs(90)),
                 pool_max_idle_per_host: usize::MAX,
-                pool_balance_addresses: false,
+                pool_max_connections_per_address: usize::MAX,
+                pool_dns_load_balancing: false,
                 tcp_keepalive: Some(Duration::from_secs(15)),
                 tcp_keepalive_interval: Some(Duration::from_secs(15)),
                 tcp_keepalive_retries: Some(3),
@@ -981,7 +983,8 @@ impl ClientBuilder {
         builder.pool_timer(hyper_util::rt::TokioTimer::new());
         builder.pool_idle_timeout(config.pool_idle_timeout);
         builder.pool_max_idle_per_host(config.pool_max_idle_per_host);
-        builder.pool_balance_addresses(config.pool_balance_addresses);
+        builder.pool_max_connections_per_address(config.pool_max_connections_per_address);
+        builder.pool_dns_load_balancing(config.pool_dns_load_balancing);
 
         if config.http09_responses {
             builder.http09_responses(true);
@@ -1514,7 +1517,20 @@ impl ClientBuilder {
         self
     }
 
-    /// Balance HTTP/2 connections across the addresses a host resolves to.
+    /// Sets the maximum number of open HTTP/2 connections to each address a
+    /// host resolves to.
+    ///
+    /// A host with several addresses may have up to that many times `max`
+    /// connections in total. Once every address is at its cap, a request goes
+    /// to the least loaded connection and waits there for a stream instead.
+    /// Default is no limit.
+    pub fn pool_max_connections_per_address(mut self, max: usize) -> ClientBuilder {
+        self.config.pool_max_connections_per_address = max;
+        self
+    }
+
+    /// Balance HTTP/2 connections across the addresses a host name resolves
+    /// to (DNS load balancing).
     ///
     /// When enabled, the pool keeps one HTTP/2 connection to each address the
     /// host name resolves to and sends each request on the least loaded one,
@@ -1523,8 +1539,8 @@ impl ClientBuilder {
     /// opens another.
     ///
     /// Default is `false`.
-    pub fn pool_balance_addresses(mut self, enabled: bool) -> ClientBuilder {
-        self.config.pool_balance_addresses = enabled;
+    pub fn pool_dns_load_balancing(mut self, enabled: bool) -> ClientBuilder {
+        self.config.pool_dns_load_balancing = enabled;
         self
     }
 
